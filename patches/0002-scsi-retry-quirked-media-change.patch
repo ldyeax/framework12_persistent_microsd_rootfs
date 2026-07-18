@@ -1,0 +1,147 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH 2/2] scsi: retry quirked media-change unit attention
+
+Clearing sense data in the resume callback handles a media-change Unit
+Attention only if the device has already queued it. The Framework MicroSD
+reader can report 28/00 later, when its card changes from not-ready to
+ready and normal I/O has resumed.
+
+Add a narrowly scoped quirk that retries only UNIT ATTENTION 28/00 instead
+of marking the removable disk changed. The failed command consumes the
+condition and its retry can then proceed. Suppress the same transient
+state change in the TEST UNIT READY polling path. Preserve the existing
+fail and media-change behavior for every other removable device and sense
+code.
+
+Limit the new system-resume sense clear to the same quirk while retaining
+the existing runtime-resume behavior for other IGN_MEDIA_CHANGE devices.
+Keep SKIP_IO_HINTS in the exact device match because devinfo flags replace
+USB storage's transport flags during SCSI scan.
+
+This deliberately gives the Framework reader fixed-media semantics for
+28/00. That is required when it contains the root filesystem, which must
+not be removed or replaced while the system is running or suspended.
+
+---
+diff --git a/drivers/scsi/scsi_devinfo.c b/drivers/scsi/scsi_devinfo.c
+index fbd6d16..87dd49c 100644
+--- a/drivers/scsi/scsi_devinfo.c
++++ b/drivers/scsi/scsi_devinfo.c
+@@ -167,7 +167,8 @@ static struct {
+ 	{"easyRAID", "X6P", NULL, BLIST_NOREPORTLUN},
+ 	{"easyRAID", "F8", NULL, BLIST_NOREPORTLUN},
+ 	{"FRMW", "MicroSD(2nd Gen)", NULL,
+-	 BLIST_IGN_MEDIA_CHANGE | BLIST_INQUIRY_36},
++	 BLIST_IGN_MEDIA_CHANGE | BLIST_INQUIRY_36 |
++	 BLIST_SKIP_IO_HINTS | BLIST_RETRY_MEDIA_CHANGE},
+ 	{"FSC", "CentricStor", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
+ 	{"FUJITSU", "ETERNUS_DXM", "*", BLIST_RETRY_ASC_C1},
+ 	{"Generic", "USB SD Reader", "1.00", BLIST_FORCELUN | BLIST_INQUIRY_36},
+diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
+index 7ddb73c..197aecc 100644
+--- a/drivers/scsi/scsi_lib.c
++++ b/drivers/scsi/scsi_lib.c
+@@ -29,6 +29,7 @@
+ #include <scsi/scsi_cmnd.h>
+ #include <scsi/scsi_dbg.h>
+ #include <scsi/scsi_device.h>
++#include <scsi/scsi_devinfo.h>
+ #include <scsi/scsi_driver.h>
+ #include <scsi/scsi_eh.h>
+ #include <scsi/scsi_host.h>
+@@ -56,6 +57,14 @@
+ static struct kmem_cache *scsi_sense_cache;
+ static DEFINE_MUTEX(scsi_sense_cache_mutex);
+ 
++static bool scsi_retry_ua_media_change(struct scsi_device *sdev,
++				       const struct scsi_sense_hdr *sshdr)
++{
++	return (sdev->sdev_bflags & BLIST_RETRY_MEDIA_CHANGE) &&
++		sshdr->sense_key == UNIT_ATTENTION && sshdr->asc == 0x28 &&
++		sshdr->ascq == 0x00;
++}
++
+ static void scsi_mq_uninit_cmd(struct scsi_cmnd *cmd);
+ 
+ int scsi_init_sense_cache(struct Scsi_Host *shost)
+@@ -815,17 +824,17 @@ static void scsi_io_completion_action(struct scsi_cmnd *cmd, int result)
+ 	} else if (sense_valid && sense_current) {
+ 		switch (sshdr.sense_key) {
+ 		case UNIT_ATTENTION:
+-			if (cmd->device->removable) {
++			if (cmd->device->removable &&
++			    !scsi_retry_ua_media_change(cmd->device, &sshdr)) {
+ 				/* Detected disc change.  Set a bit
+ 				 * and quietly refuse further access.
+ 				 */
+ 				cmd->device->changed = 1;
+ 				action = ACTION_FAIL;
+ 			} else {
+-				/* Must have been a power glitch, or a
+-				 * bus reset.  Could not have been a
+-				 * media change, so we just retry the
+-				 * command and see what happens.
++				/*
++				 * Fixed media cannot change.  A quirked reader
++				 * reports this condition spuriously after resume.
+ 				 */
+ 				action = ACTION_RETRY;
+ 			}
+@@ -2421,7 +2430,8 @@ scsi_test_unit_ready(struct scsi_device *sdev, int timeout, int retries,
+ 		result = scsi_execute_cmd(sdev, cmd, REQ_OP_DRV_IN, NULL, 0,
+ 					  timeout, 1, &exec_args);
+ 		if (sdev->removable && result > 0 && scsi_sense_valid(sshdr) &&
+-		    sshdr->sense_key == UNIT_ATTENTION)
++		    sshdr->sense_key == UNIT_ATTENTION &&
++		    !scsi_retry_ua_media_change(sdev, sshdr))
+ 			sdev->changed = 1;
+ 	} while (result > 0 && scsi_sense_valid(sshdr) &&
+ 		 sshdr->sense_key == UNIT_ATTENTION && --retries);
+diff --git a/drivers/scsi/sd.c b/drivers/scsi/sd.c
+index bb49d64..24c39e1 100644
+--- a/drivers/scsi/sd.c
++++ b/drivers/scsi/sd.c
+@@ -4252,7 +4252,7 @@ static int sd_resume(struct device *dev)
+ 	return 0;
+ }
+ 
+-static void sd_resume_clear_sense(struct scsi_disk *sdkp)
++static void sd_resume_clear_sense(struct scsi_disk *sdkp, bool runtime)
+ {
+ 	struct scsi_device *sdp = sdkp->device;
+ 	/* Clear a spurious media-change condition before regular I/O resumes. */
+@@ -4261,7 +4261,8 @@ static void sd_resume_clear_sense(struct scsi_disk *sdkp)
+ 		.req_flags = BLK_MQ_REQ_PM,
+ 	};
+ 
+-	if (!sdp->ignore_media_change)
++	if (!sdp->ignore_media_change ||
++	    (!runtime && !(sdp->sdev_bflags & BLIST_RETRY_MEDIA_CHANGE)))
+ 		return;
+ 
+ 	if (scsi_execute_cmd(sdp, cmd, REQ_OP_DRV_IN, NULL, 0,
+@@ -4277,7 +4278,7 @@ static int sd_resume_common(struct device *dev, bool runtime)
+ 	if (!sdkp)	/* E.g.: runtime resume at the start of sd_probe() */
+ 		return 0;
+ 
+-	sd_resume_clear_sense(sdkp);
++	sd_resume_clear_sense(sdkp, runtime);
+ 
+ 	if (!sd_do_start_stop(sdkp->device, runtime)) {
+ 		sdkp->suspended = false;
+diff --git a/include/scsi/scsi_devinfo.h b/include/scsi/scsi_devinfo.h
+index 1d79a3b..c62f038 100644
+--- a/include/scsi/scsi_devinfo.h
++++ b/include/scsi/scsi_devinfo.h
+@@ -71,8 +71,10 @@
+ #define BLIST_RETRY_ASC_C1	((__force blist_flags_t)(1ULL << 33))
+ /* Do not query the IO Advice Hints Grouping mode page */
+ #define BLIST_SKIP_IO_HINTS	((__force blist_flags_t)(1ULL << 34))
++/* Retry not-ready to ready media change Unit Attention */
++#define BLIST_RETRY_MEDIA_CHANGE ((__force blist_flags_t)(1ULL << 35))
+ 
+-#define __BLIST_LAST_USED BLIST_SKIP_IO_HINTS
++#define __BLIST_LAST_USED BLIST_RETRY_MEDIA_CHANGE
+ 
+ #define __BLIST_HIGH_UNUSED (~(__BLIST_LAST_USED | \
+ 			       (__force blist_flags_t) \

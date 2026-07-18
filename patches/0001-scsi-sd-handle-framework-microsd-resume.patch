@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH 1/2] scsi: sd: handle Framework MicroSD resume
+
+The Framework MicroSD (2nd Gen) Expansion Card reinitializes its medium
+during system suspend. Its first command after resume consequently reports
+UNIT ATTENTION 28/00 (not ready to ready change, medium may have changed).
+
+The SCSI disk layer treats that response as a real media replacement
+because the reader is removable. It fails the command, marks the device
+changed, and rejects subsequent I/O until removable-media polling clears
+the flag. That is not survivable when the device contains the root
+filesystem.
+
+BLIST_IGN_MEDIA_CHANGE already clears this condition on runtime resume.
+Move that handling into the common resume path so it also runs during
+system resume, before tasks are thawed, and apply the quirk to the affected
+reader.
+
+---
+diff --git a/drivers/scsi/scsi_devinfo.c b/drivers/scsi/scsi_devinfo.c
+--- a/drivers/scsi/scsi_devinfo.c
++++ b/drivers/scsi/scsi_devinfo.c
+@@ -166,6 +166,8 @@ static struct {
+ 	{"easyRAID", "16P", NULL, BLIST_NOREPORTLUN},
+ 	{"easyRAID", "X6P", NULL, BLIST_NOREPORTLUN},
+ 	{"easyRAID", "F8", NULL, BLIST_NOREPORTLUN},
++	{"FRMW", "MicroSD(2nd Gen)", NULL,
++	 BLIST_IGN_MEDIA_CHANGE | BLIST_INQUIRY_36},
+ 	{"FSC", "CentricStor", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
+ 	{"FUJITSU", "ETERNUS_DXM", "*", BLIST_RETRY_ASC_C1},
+ 	{"Generic", "USB SD Reader", "1.00", BLIST_FORCELUN | BLIST_INQUIRY_36},
+diff --git a/drivers/scsi/sd.c b/drivers/scsi/sd.c
+--- a/drivers/scsi/sd.c
++++ b/drivers/scsi/sd.c
+@@ -4252,6 +4252,23 @@ static int sd_resume(struct device *dev)
+ 	return 0;
+ }
+ 
++static void sd_resume_clear_sense(struct scsi_disk *sdkp)
++{
++	struct scsi_device *sdp = sdkp->device;
++	/* Clear a spurious media-change condition before regular I/O resumes. */
++	static const u8 cmd[10] = { REQUEST_SENSE };
++	const struct scsi_exec_args exec_args = {
++		.req_flags = BLK_MQ_REQ_PM,
++	};
++
++	if (!sdp->ignore_media_change)
++		return;
++
++	if (scsi_execute_cmd(sdp, cmd, REQ_OP_DRV_IN, NULL, 0,
++			     sdp->request_queue->rq_timeout, 1, &exec_args))
++		sd_printk(KERN_NOTICE, sdkp, "Failed to clear sense data\n");
++}
++
+ static int sd_resume_common(struct device *dev, bool runtime)
+ {
+ 	struct scsi_disk *sdkp = dev_get_drvdata(dev);
+@@ -4260,6 +4277,8 @@ static int sd_resume_common(struct device *dev, bool runtime)
+ 	if (!sdkp)	/* E.g.: runtime resume at the start of sd_probe() */
+ 		return 0;
+ 
++	sd_resume_clear_sense(sdkp);
++
+ 	if (!sd_do_start_stop(sdkp->device, runtime)) {
+ 		sdkp->suspended = false;
+ 		return 0;
+@@ -4292,28 +4311,6 @@ static int sd_resume_system(struct device *dev)
+ 
+ static int sd_resume_runtime(struct device *dev)
+ {
+-	struct scsi_disk *sdkp = dev_get_drvdata(dev);
+-	struct scsi_device *sdp;
+-
+-	if (!sdkp)	/* E.g.: runtime resume at the start of sd_probe() */
+-		return 0;
+-
+-	sdp = sdkp->device;
+-
+-	if (sdp->ignore_media_change) {
+-		/* clear the device's sense data */
+-		static const u8 cmd[10] = { REQUEST_SENSE };
+-		const struct scsi_exec_args exec_args = {
+-			.req_flags = BLK_MQ_REQ_PM,
+-		};
+-
+-		if (scsi_execute_cmd(sdp, cmd, REQ_OP_DRV_IN, NULL, 0,
+-				     sdp->request_queue->rq_timeout, 1,
+-				     &exec_args))
+-			sd_printk(KERN_NOTICE, sdkp,
+-				  "Failed to clear sense data\n");
+-	}
+-
+ 	return sd_resume_common(dev, true);
+ }
+ 
