@@ -1,2 +1,3 @@
 # Patch payload whitespace is validated by checkpatch and patch application.
 *.patch -whitespace
+*.patch.in -whitespace

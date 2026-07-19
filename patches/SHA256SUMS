@@ -1,2 +1,4 @@
-f38991e00a60b3c89920438404ec89bebd9cc39fa715a1b60cffc36c8f4293bb  0001-scsi-sd-handle-framework-microsd-resume.patch
-4dc421c0e7b9e73e90ad3d8206ba037bdf59a99f12c5962627a57f5fc714953b  0002-scsi-retry-quirked-media-change.patch
+0aff786c39ba2fa3bf45e2f56a15a57fb3eb1d705de3a3823b3cd9bb0a0dc830  0001-scsi-sd-handle-framework-microsd-resume.patch
+69cfbf4e9fa6a408b732766d53e8945b292c0da3abd23affde02b185a4dfaad4  0002-scsi-retry-quirked-media-change.patch
+aeb8baedcf605d9b87a098d28c8bee4e778dc1c949b9c7a9c3ca55ada0393bad  0090-scsi-device-match.patch
+2c36a8f86af14e86c8dea2b912f6d675853f0126a765d4ea70e4ea7a403e6650  0090-scsi-device-match.patch.in

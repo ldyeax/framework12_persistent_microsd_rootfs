@@ -23,20 +23,22 @@ fallback.
 
 ## Verify the target
 
-The static quirk matches only SCSI vendor `FRMW` and model
-`MicroSD(2nd Gen)`. The validated USB ID is `32ac:0026`, using
-`usb-storage` Bulk-Only transport.
+Inspect the resolved profile and live topology:
 
 ```bash
+./scripts/install-gentoo-patches.sh --show-config
 findmnt -no SOURCE,TARGET,FSTYPE,OPTIONS /
-lsusb -d 32ac:0026
 lsusb -t
-./scripts/collect-diagnostics.sh
+sudo ./scripts/collect-diagnostics.sh
 ```
 
-Confirm through `lsblk -s` or sysfs that this reader is actually an ancestor of
-the root partition. A different product, first-generation reader, UAS device,
-or MMC device is outside the patch's match and evidence.
+The tested static quirk matches SCSI vendor `FRMW` and model
+`MicroSD(2nd Gen)`. Its validated USB ID is `32ac:0026`, using `usb-storage`
+Bulk-Only transport. Confirm that the configured reader is actually an
+ancestor of the configured target partition. A different product,
+first-generation reader, UAS device, or MMC device is outside the runtime
+evidence. Configure different selectors, including an optional physical-bay
+`ID_PATH`, as described in [device and slot configuration](CONFIGURATION.md).
 
 ## Obtain a reviewable kernel source
 
@@ -48,7 +50,8 @@ other releases.
 
 Before applying, inspect the new source for:
 
-- an existing `FRMW` / `MicroSD(2nd Gen)` entry;
+- any existing SCSI devinfo vendor/model entry whose prefix overlaps the
+  rendered match, including the default `FRMW` / `MicroSD(2nd Gen)` entry;
 - an upstream fix with equivalent semantics;
 - use of bit 35 by another `BLIST_*` flag;
 - changes around `sd_resume_common()`, `scsi_io_completion_action()`, or
@@ -67,17 +70,29 @@ git apply --check /path/to/repo/patches/0001-scsi-sd-handle-framework-microsd-re
 git apply /path/to/repo/patches/0001-scsi-sd-handle-framework-microsd-resume.patch
 git apply --check /path/to/repo/patches/0002-scsi-retry-quirked-media-change.patch
 git apply /path/to/repo/patches/0002-scsi-retry-quirked-media-change.patch
+git apply --check /path/to/repo/patches/0090-scsi-device-match.patch
+git apply /path/to/repo/patches/0090-scsi-device-match.patch
 ```
 
 `git apply` works outside a Git checkout. With GNU patch, use
 `patch -p1 --fuzz=0 --dry-run` and then `patch -p1 --fuzz=0` for each file in
-the same order. Patch 2 depends on patch 1.
+the same order. Patch 2 depends on patch 1, and patch 3 selects the configured
+reader. The checked-in `0090` contains the tested default identity. For another
+identity, render a reviewable series first:
+
+```bash
+./scripts/install-gentoo-patches.sh \
+    --config /path/to/reviewed-device.conf \
+    --destination /tmp/rendered-sdroot-patches \
+    --no-config-install
+```
 
 If the kernel ships `scripts/checkpatch.pl`, the publication checks are:
 
 ```bash
 scripts/checkpatch.pl --no-tree --strict --no-signoff /path/to/repo/patches/0001-*.patch
 scripts/checkpatch.pl --no-tree --strict --no-signoff /path/to/repo/patches/0002-*.patch
+scripts/checkpatch.pl --no-tree --strict --no-signoff /path/to/repo/patches/0090-*.patch
 ```
 
 ## Configure the root and sleep paths
@@ -148,14 +163,17 @@ A conservative initial command line is:
 
 ```text
 root=UUID=<actual-root-uuid> ro rootwait rootfstype=<actual-filesystem> \
-usbcore.autosuspend=-1 usb-storage.quirks=32ac:0026:u \
-usbcore.quirks=32ac:0026:k
+usbcore.autosuspend=-1 usb-storage.quirks=<vid>:<pid>:u \
+usbcore.quirks=<vid>:<pid>:k
 ```
 
 The SCSI patches fix the observed Unit Attention failure. The USB power flags
 do not. They are retained to reproduce the tested configuration and can be
 evaluated one at a time after reliability is established. The `u` quirk is
-redundant when the reader is already on Bulk-Only transport.
+redundant when the reader is already on Bulk-Only transport. Substitute the
+profile's `usb_id`; these parameters cannot select a physical `ID_PATH`. The
+`:u` flag disables UAS, so omit it for an intentionally UAS-based setup. UAS
+remains outside the runtime evidence for this workaround.
 
 ## Validate the running kernel
 
@@ -174,11 +192,12 @@ sudo ./scripts/validate-resume.sh --check
 sudo ./scripts/validate-resume.sh 20 15
 ```
 
-The test checks that the reader backs `/`, writes and fsyncs `/` after each
-resume, and fails on the known block and filesystem signatures. It reports
-early wakes because an RTC deadline does not prevent another wake source. It
-does not test desktop or lid hooks; repeat the test with actual lid close and
-longer real-world sleeps.
+The test checks that the reader backs the configured target, enforces the
+configured USB ID and optional physical `ID_PATH`, writes and fsyncs the target
+after each resume, and fails on known block and filesystem signatures. It
+reports early wakes because an RTC deadline does not prevent another wake
+source. It does not test desktop or lid hooks; repeat the test with actual lid
+close and longer real-world sleeps.
 
 On a non-journald system, reproduce the same procedure manually while
 capturing the kernel ring buffer persistently. Do not treat a logging failure

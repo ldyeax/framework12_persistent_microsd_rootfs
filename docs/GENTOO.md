@@ -24,7 +24,15 @@ Know how to select the fallback from GRUB before proceeding.
 
 ## 2. Confirm the hardware path
 
-Install `sys-apps/usbutils` if `lsusb` is unavailable, then inspect the reader:
+Inspect the resolved tested profile and collect the live topology first:
+
+```bash
+./scripts/install-gentoo-patches.sh --show-config
+sudo ./scripts/collect-diagnostics.sh
+```
+
+Install `sys-apps/usbutils` if `lsusb` is unavailable. The following explicit
+commands show the identity used for the validated result:
 
 ```bash
 findmnt -no SOURCE,TARGET,FSTYPE,OPTIONS /
@@ -42,10 +50,13 @@ for device in /sys/class/scsi_device/*/device; do
 done
 ```
 
-Proceed only if the root device ultimately descends from the reader reporting
-USB `32ac:0026` and SCSI `FRMW` / `MicroSD(2nd Gen)`. `lsusb -t` should show
-`Driver=usb-storage`, not an MMC host. A different identity needs a separate
-investigation; do not broaden the device-table match speculatively.
+With the default profile, proceed only if the root device ultimately descends
+from the reader reporting USB `32ac:0026` and SCSI `FRMW` /
+`MicroSD(2nd Gen)`. `lsusb -t` should show `Driver=usb-storage`, not an MMC
+host. A different identity needs a separate investigation; do not broaden the
+device-table match speculatively. To constrain the intended expansion bay,
+record the reader's udev `ID_PATH` as described in
+[device and slot configuration](CONFIGURATION.md).
 
 Check Framework's current firmware page before the kernel work. The validated
 machine used BIOS 3.07 and reader revision `0001`; those are observations, not
@@ -57,6 +68,7 @@ From this repository:
 
 ```bash
 (cd patches && sha256sum -c SHA256SUMS)
+./scripts/install-gentoo-patches.sh --show-config
 sudo ./scripts/install-gentoo-patches.sh
 ```
 
@@ -69,7 +81,16 @@ This installs the ordered files under:
 Portage's user-patch phase will apply them when it prepares a fresh
 `sys-kernel/gentoo-sources` tree. Install or reinstall the selected source
 package using the normal package-management policy for the machine, and
-inspect the emerge output to confirm both filenames were applied.
+inspect the emerge output to confirm all three patch filenames were applied.
+The installer also writes the resolved runtime guards to
+`/etc/framework-microsd-rootfs.conf`.
+
+The tested values are defaults rather than fixed inputs. Pass `--config FILE`
+or individual device options when they differ. `--usb-slot ID_PATH` constrains
+validation to a physical expansion bay; it cannot narrow the kernel quirk.
+Use `--portage-slot SLOT` only when Portage should install under a package-slot
+directory such as `gentoo-sources:6.18.33-r1`. These two meanings of slot are
+independent; see [the complete option reference](CONFIGURATION.md).
 
 Do not also apply the patches manually to a tree that Portage has already
 patched. If an existing target differs from the repository copy, the helper
@@ -92,6 +113,8 @@ git apply --check /path/to/repo/patches/0001-scsi-sd-handle-framework-microsd-re
 git apply /path/to/repo/patches/0001-scsi-sd-handle-framework-microsd-resume.patch
 git apply --check /path/to/repo/patches/0002-scsi-retry-quirked-media-change.patch
 git apply /path/to/repo/patches/0002-scsi-retry-quirked-media-change.patch
+git apply --check /path/to/repo/patches/0090-scsi-device-match.patch
+git apply /path/to/repo/patches/0090-scsi-device-match.patch
 ```
 
 `git apply` works even when the source itself is not a Git checkout. GNU patch
@@ -102,12 +125,18 @@ patch -p1 --fuzz=0 --dry-run < /path/to/0001-scsi-sd-handle-framework-microsd-re
 patch -p1 --fuzz=0 < /path/to/0001-scsi-sd-handle-framework-microsd-resume.patch
 patch -p1 --fuzz=0 --dry-run < /path/to/0002-scsi-retry-quirked-media-change.patch
 patch -p1 --fuzz=0 < /path/to/0002-scsi-retry-quirked-media-change.patch
+patch -p1 --fuzz=0 --dry-run < /path/to/0090-scsi-device-match.patch
+patch -p1 --fuzz=0 < /path/to/0090-scsi-device-match.patch
 ```
 
-Patch 2 depends on patch 1. If a check fails, stop. A reverse check can help
-identify an already-applied file:
+Patch 2 depends on patch 1, and patch 3 opts in the configured reader. These
+commands use the checked-in default identity. For another identity, first use
+the installer with a staging `--destination` to render and review all three
+files. If a check fails, stop. A reverse check can help identify an
+already-applied series:
 
 ```bash
+git apply --reverse --check /path/to/0090-scsi-device-match.patch
 git apply --reverse --check /path/to/0002-scsi-retry-quirked-media-change.patch
 ```
 
@@ -210,16 +239,20 @@ If the root-path drivers are modular, inspect the initramfs with `lsinitrd` and
 confirm the exact release's `scsi_mod`, `sd_mod`, xHCI, `usb-storage`, and XFS
 modules are present. Correct any missing artifacts before rebooting.
 
-The tested conservative kernel command line was:
+The conservative kernel command line uses the configured USB ID:
 
 ```text
 root=UUID=<root-filesystem-uuid> ro rootwait rootfstype=xfs \
-usbcore.autosuspend=-1 usb-storage.quirks=32ac:0026:u \
-usbcore.quirks=32ac:0026:k
+usbcore.autosuspend=-1 usb-storage.quirks=<vid>:<pid>:u \
+usbcore.quirks=<vid>:<pid>:k
 ```
 
 Use the machine's real filesystem UUID; never copy one from another host.
-Regenerate the bootloader configuration after changing its defaults.
+The validated reader used `32ac:0026`. The USB quirk parameters cannot select
+an `ID_PATH`, so they apply to every connected device with that VID:PID. The
+`:u` flag disables UAS and belongs to the validated Bulk-Only setup; do not use
+it for an intentionally UAS-based profile. Regenerate the bootloader
+configuration after changing its defaults.
 
 ## 8. Boot and validate
 
@@ -231,19 +264,9 @@ cat /proc/cmdline
 sudo ./scripts/collect-diagnostics.sh
 ```
 
-Dynamically locate the reader and verify its live flags:
-
-```bash
-for device in /sys/class/scsi_device/*/device; do
-    vendor=$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' < "$device/vendor")
-    model=$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' < "$device/model")
-    if [[ $vendor == FRMW && $model == 'MicroSD(2nd Gen)' ]]; then
-        cat "$device/blacklist"
-    fi
-done
-```
-
-The result must contain all of:
+The diagnostics use the installed profile rather than a hardcoded block,
+SCSI, or USB topology name. The configured reader must contain all of these
+live SCSI flags:
 
 ```text
 INQUIRY_36 IGN_MEDIA_CHANGE SKIP_IO_HINTS RETRY_MEDIA_CHANGE
@@ -257,8 +280,9 @@ sudo ./scripts/validate-resume.sh --check
 sudo ./scripts/validate-resume.sh 20 15
 ```
 
-The validator confirms that the matching reader backs `/`, that the live
-quirks are active, and that a write on `/` can be fsynced after every resume.
+The validator confirms that the matching reader backs the configured target,
+that USB ID, optional physical `ID_PATH`, SCSI identity/revision, transport,
+and live quirks match, and that a target write can be fsynced after every resume.
 RTC wake deadlines can be preempted by other wake sources, so it reports early
 wakes separately. Follow with actual lid-close tests and longer sleep periods;
 direct `rtcwake` does not exercise desktop or lid-policy hooks.
@@ -277,7 +301,8 @@ workloads, repeated lid-close resumes, and longer sleeps.
 For every upgrade:
 
 1. Check whether an upstream equivalent now exists.
-2. Check both patches against a pristine new tree in order.
+2. Render the configured series and check all three patches against a pristine
+   new tree in order.
 3. Inspect `include/scsi/scsi_devinfo.h` for use of bit 35.
 4. Build a new, uniquely suffixed release without replacing the last working
    one.

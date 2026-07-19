@@ -94,16 +94,15 @@ connected from returning SCSI `28/00`.
 Linux already issued `REQUEST SENSE` on runtime resume for devices with
 `BLIST_IGN_MEDIA_CHANGE`. Patch 1 factors that behavior into the common SCSI
 disk resume path so a system resume can clear a condition before userspace and
-normal I/O resume. It also introduces the exact `FRMW` / `MicroSD(2nd Gen)`
-devinfo match.
+normal I/O resume.
 
 This alone is insufficient when the reader establishes the Unit Attention
 after the resume callback has already run.
 
 ### Patch 2: narrowly scoped completion retry
 
-Patch 2 adds `BLIST_RETRY_MEDIA_CHANGE` and enables it only for the exact
-reader identity. In normal command completion it retries only this tuple:
+Patch 2 adds `BLIST_RETRY_MEDIA_CHANGE`. For a device carrying that flag,
+normal command completion retries only this tuple:
 
 ```text
 current sense + UNIT_ATTENTION + ASC 0x28 + ASCQ 0x00
@@ -120,18 +119,32 @@ Patch 2 also limits the new system-resume sense clear to devices carrying the
 new quirk. Existing devices with only `BLIST_IGN_MEDIA_CHANGE` retain their
 previous runtime behavior.
 
-The exact devinfo match includes `BLIST_SKIP_IO_HINTS`. In the tested SCSI scan
+### Patch 3: configured device match
+
+Patch 3 enables both behaviors for the configured SCSI inquiry vendor/model.
+The checked-in default uses the exact `FRMW` vendor and full 16-character
+`MicroSD(2nd Gen)` model observed during the investigation. The installer can
+render this isolated patch for a reviewed alternate identity without modifying
+the device-neutral behavior patches.
+
+The devinfo match also includes `BLIST_SKIP_IO_HINTS`. In the tested SCSI scan
 code, a devinfo match replaces the flags supplied by the lower-level USB
 storage driver. Retaining this flag avoids accidentally re-enabling an IO
 Advice Hints Grouping mode-page query that USB storage intentionally skips.
 
+The static devinfo mechanism cannot match USB VID:PID, physical USB path, SCSI
+revision, block name, or SCSI address. Those configurable values are runtime
+validation guards, not kernel match keys.
+
 ## Deliberate tradeoff
 
-The workaround treats `28/00` as spurious for every reader matching the exact
-SCSI identity. A genuine removal or replacement reported only through that
-sense tuple will not receive normal removable-media handling. That tradeoff is
-necessary for a mounted root device but makes the operational rule absolute:
-never remove or replace the card while the system is running or suspended.
+The workaround treats `28/00` as spurious for every reader matching the
+configured SCSI vendor/model. The default model fills the inquiry field; a
+short custom model is a broader prefix. A genuine removal or replacement
+reported only through that sense tuple will not receive normal removable-media
+handling. That tradeoff is necessary for a mounted root device but makes the
+operational rule absolute: never remove or replace the card while the system
+is running or suspended.
 
 This is not a general solution for USB disconnects, controller resets,
 timeouts, bad flash media, or other Unit Attention codes.

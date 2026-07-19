@@ -53,8 +53,13 @@ Read [the Gentoo procedure](docs/GENTOO.md) completely before changing a
 bootable kernel. The condensed flow is:
 
 ```bash
+./scripts/install-gentoo-patches.sh --show-config
 sudo ./scripts/install-gentoo-patches.sh
 ```
+
+The tested identities are defaults, not fixed installer inputs. Use the shared
+profile and `--usb-slot` guard when the reader must remain in a particular
+Framework expansion bay; see [device and slot configuration](docs/CONFIGURATION.md).
 
 Let a fresh `sys-kernel/gentoo-sources` install or reinstall apply the files
 from `/etc/portage/patches/sys-kernel/gentoo-sources/`. Configure a uniquely
@@ -83,8 +88,9 @@ sudo ./scripts/validate-resume.sh 20 15
 
 The command needs `bash`, util-linux (`findmnt`, `lsblk`, `flock`, and
 `rtcwake`), coreutils, and a readable systemd kernel journal. It writes and
-fsyncs a temporary probe on `/` after every resume. It does not exercise lid
-policy or desktop suspend hooks.
+fsyncs a temporary probe on `/` after every resume. A profile that constrains
+`usb_path` also requires `udevadm`. The test does not exercise lid policy or
+desktop suspend hooks.
 
 ## What the patches fix
 
@@ -95,14 +101,15 @@ semantics. It fails the first request, marks the device changed, and rejects
 following I/O until polling clears that state. That is destructive when the
 device contains the mounted root filesystem and can make XFS shut down.
 
-The two patches apply in order:
+The three-patch series applies in order:
 
 1. Extend the existing `BLIST_IGN_MEDIA_CHANGE` sense clear into the system
-   resume path and add the exact SCSI inquiry match.
-2. Add `BLIST_RETRY_MEDIA_CHANGE` for the reader. The normal I/O completion
+   resume path.
+2. Add `BLIST_RETRY_MEDIA_CHANGE`. The normal I/O completion
    path retries only current-sense `UNIT_ATTENTION 28/00`; removable-media
    polling suppresses the changed flag for the same normalized sense tuple.
-   The exact device entry also preserves `SKIP_IO_HINTS`.
+3. Opt in the configured SCSI inquiry vendor/model while preserving
+   `SKIP_IO_HINTS`. The installer renders this match from the shared profile.
 
 The eager resume clear handles an already-present condition before tasks thaw.
 The narrowly scoped completion retry handles the observed race where the
@@ -126,10 +133,15 @@ asynchronous root-device discovery. Disabling USB autosuspend and link power
 management can remove other power-state variables. The `u` flag disables UAS,
 but this reader already uses Bulk-Only transport. Keep the tested command line
 for initial validation, then change one variable at a time if simplifying it.
+For another reader identity, substitute its configured `usb_id`; the boot
+parameters cannot be constrained to a physical `ID_PATH`.
 
 ## Repository contents
 
 - [`patches/`](patches/) contains the ordered kernel patches and checksums.
+- [`config/device.conf`](config/device.conf) contains the tested device profile.
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) documents every device,
+  physical-bay, target, RTC, and Gentoo package-slot option.
 - [`docs/GENTOO.md`](docs/GENTOO.md) is the tested Gentoo installation path.
 - [`docs/GENERIC-LINUX.md`](docs/GENERIC-LINUX.md) covers distro-neutral build
   and early-boot requirements.
@@ -140,6 +152,8 @@ for initial validation, then change one variable at a time if simplifying it.
 - [`docs/RECOVERY.md`](docs/RECOVERY.md) covers fallback boot and XFS recovery.
 - [`scripts/collect-diagnostics.sh`](scripts/collect-diagnostics.sh) collects
   relevant state without intentionally printing storage serial numbers.
+- [`scripts/install-gentoo-patches.sh`](scripts/install-gentoo-patches.sh)
+  renders and installs a profile-specific three-patch series.
 - [`scripts/validate-resume.sh`](scripts/validate-resume.sh) runs guarded resume
   and root-write tests.
 

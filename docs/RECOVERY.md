@@ -71,13 +71,16 @@ image installation. Verify the bootloader entry before rebooting.
 Removing the workaround restores the original suspend risk. Boot a different
 kernel first and avoid suspend while rolling back.
 
-For Gentoo, remove the two files from
+For Gentoo, remove the three installed patch files from
 `/etc/portage/patches/sys-kernel/gentoo-sources/` only after recording why the
 rollback is being done. Prepare a fresh source tree rather than trying to build
-a partially reversed one. If reversal is necessary for review, reverse patch
-2 before patch 1:
+a partially reversed one. If `--portage-slot` was used, operate on its
+`gentoo-sources:<slot>` directory. If reversal is necessary for review, reverse
+patch 3, then patch 2, then patch 1:
 
 ```bash
+git apply --reverse --check patches/0090-scsi-device-match.patch
+git apply --reverse patches/0090-scsi-device-match.patch
 git apply --reverse --check patches/0002-scsi-retry-quirked-media-change.patch
 git apply --reverse patches/0002-scsi-retry-quirked-media-change.patch
 git apply --reverse --check patches/0001-scsi-sd-handle-framework-microsd-resume.patch

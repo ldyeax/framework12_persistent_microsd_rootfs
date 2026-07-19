@@ -13,6 +13,14 @@ booting the fallback kernel, installing the image under a different release
 than its modules, building an unpatched source tree, or selecting the wrong
 boot entry.
 
+Confirm that the runtime profile and rendered match agree before changing the
+kernel match:
+
+```bash
+./scripts/install-gentoo-patches.sh --show-config
+sudo ./scripts/collect-diagnostics.sh
+```
+
 If none of the exact-device flags appear, print the inquiry fields without
 stripping meaningful internal spaces:
 
@@ -30,11 +38,29 @@ done
 Do not weaken the table match merely to make an unknown reader receive the
 quirk. Capture diagnostics and establish that it has the same failure first.
 
+## A device or physical-slot guard does not match
+
+The diagnostics list every candidate with the configured USB ID, its current
+udev `ID_PATH`, SCSI inquiry fields, transport driver, and whether each
+configured guard matches. A value such as `2-4` is a transient sysfs node, not
+a valid long-term bay selector. Use the full `ID_PATH`, for example
+`pci-0000:00:0d.0-usb-0:4`, or set `usb_path=any` after reviewing the loss of
+the physical-bay constraint.
+
+The installer persists its resolved profile in
+`/etc/framework-microsd-rootfs.conf` by default. An explicit `--config` has
+precedence when selecting the base file. `SDROOT_*` environment variables then
+override that file, and individual command-line device options have highest
+precedence. See [configuration](CONFIGURATION.md) for the exact precedence and
+match-scope limitations.
+
 ## A patch does not apply
 
-Patch 2 must follow patch 1. Check whether the series is already present:
+Patch 2 must follow patch 1, and the rendered device match is patch 3. Check
+whether the series is already present in reverse order:
 
 ```bash
+git apply --reverse --check patches/0090-scsi-device-match.patch
 git apply --reverse --check patches/0002-scsi-retry-quirked-media-change.patch
 git apply --reverse --check patches/0001-scsi-sd-handle-framework-microsd-resume.patch
 ```
@@ -60,6 +86,10 @@ Confirm the exact paths and checksums:
 sudo find /etc/portage/patches/sys-kernel/gentoo-sources -maxdepth 1 -type f -print
 (cd patches && sha256sum -c SHA256SUMS)
 ```
+
+If installation used `--portage-slot`, inspect the corresponding
+`gentoo-sources:<slot>` directory instead. Do not confuse this package SLOT
+with the Framework expansion bay selected by `--usb-slot`.
 
 The source tree must be freshly prepared after the user patches are installed.
 Do not manually apply them to a tree Portage has already patched. Review emerge
@@ -88,13 +118,16 @@ module set and release.
 The script deliberately stops if:
 
 - it is not root;
-- `/` is not writable or is not a directly resolvable block source;
-- the exact reader is not in the `lsblk` ancestor chain for `/`;
+- the configured target is not writable or is not a directly resolvable block
+  source;
+- the configured reader is not in the target's `lsblk` ancestor chain;
+- USB ID, optional physical `ID_PATH`, SCSI revision, or transport does not
+  match the target reader;
 - any of the four live flags is missing;
 - `mem` sleep or a usable RTC is unavailable;
 - another RTC alarm is pending;
 - the current-boot systemd kernel journal cannot be read;
-- its fsynced probe cannot be created on `/`.
+- its fsynced probe cannot be created on the configured target.
 
 Resolve the specific preflight failure. Do not bypass a guard merely to obtain
 a PASS line. Device-mapper and LVM roots should normally appear in the

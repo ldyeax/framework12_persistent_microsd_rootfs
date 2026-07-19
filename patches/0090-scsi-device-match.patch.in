@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH 3/3] scsi: quirk @SCSI_VENDOR@ @SCSI_MODEL@ media change
+
+Opt the configured removable reader into the narrowly scoped media-change
+resume handling. Keep SKIP_IO_HINTS because an exact devinfo match replaces
+the transport-provided flags during SCSI scan.
+
+The reader is treated as fixed media for UNIT ATTENTION 28/00 and must not
+have its card removed or replaced while the system is running or suspended.
+
+---
+diff --git a/drivers/scsi/scsi_devinfo.c b/drivers/scsi/scsi_devinfo.c
+--- a/drivers/scsi/scsi_devinfo.c
++++ b/drivers/scsi/scsi_devinfo.c
+@@ -166,6 +166,9 @@ static struct {
+ 	{"easyRAID", "16P", NULL, BLIST_NOREPORTLUN},
+ 	{"easyRAID", "X6P", NULL, BLIST_NOREPORTLUN},
+ 	{"easyRAID", "F8", NULL, BLIST_NOREPORTLUN},
++	{"@SCSI_VENDOR@", "@SCSI_MODEL@", NULL,
++	 BLIST_IGN_MEDIA_CHANGE | BLIST_INQUIRY_36 |
++	 BLIST_SKIP_IO_HINTS | BLIST_RETRY_MEDIA_CHANGE},
+ 	{"FSC", "CentricStor", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
+ 	{"FUJITSU", "ETERNUS_DXM", "*", BLIST_RETRY_ASC_C1},
+ 	{"Generic", "USB SD Reader", "1.00", BLIST_FORCELUN | BLIST_INQUIRY_36},

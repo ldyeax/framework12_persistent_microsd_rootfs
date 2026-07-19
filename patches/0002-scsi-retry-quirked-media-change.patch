@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-Subject: [PATCH 2/2] scsi: retry quirked media-change unit attention
+Subject: [PATCH 2/3] scsi: retry quirked media-change unit attention
 
 Clearing sense data in the resume callback handles a media-change Unit
 Attention only if the device has already queued it. The Framework MicroSD
@@ -15,28 +15,14 @@ code.
 
 Limit the new system-resume sense clear to the same quirk while retaining
 the existing runtime-resume behavior for other IGN_MEDIA_CHANGE devices.
-Keep SKIP_IO_HINTS in the exact device match because devinfo flags replace
-USB storage's transport flags during SCSI scan.
+The separate device-table patch selects the reader and preserves the
+transport flags required by that match.
 
 This deliberately gives the Framework reader fixed-media semantics for
 28/00. That is required when it contains the root filesystem, which must
 not be removed or replaced while the system is running or suspended.
 
 ---
-diff --git a/drivers/scsi/scsi_devinfo.c b/drivers/scsi/scsi_devinfo.c
-index fbd6d16..87dd49c 100644
---- a/drivers/scsi/scsi_devinfo.c
-+++ b/drivers/scsi/scsi_devinfo.c
-@@ -167,7 +167,8 @@ static struct {
- 	{"easyRAID", "X6P", NULL, BLIST_NOREPORTLUN},
- 	{"easyRAID", "F8", NULL, BLIST_NOREPORTLUN},
- 	{"FRMW", "MicroSD(2nd Gen)", NULL,
--	 BLIST_IGN_MEDIA_CHANGE | BLIST_INQUIRY_36},
-+	 BLIST_IGN_MEDIA_CHANGE | BLIST_INQUIRY_36 |
-+	 BLIST_SKIP_IO_HINTS | BLIST_RETRY_MEDIA_CHANGE},
- 	{"FSC", "CentricStor", "*", BLIST_SPARSELUN | BLIST_LARGELUN},
- 	{"FUJITSU", "ETERNUS_DXM", "*", BLIST_RETRY_ASC_C1},
- 	{"Generic", "USB SD Reader", "1.00", BLIST_FORCELUN | BLIST_INQUIRY_36},
 diff --git a/drivers/scsi/scsi_lib.c b/drivers/scsi/scsi_lib.c
 index 7ddb73c..197aecc 100644
 --- a/drivers/scsi/scsi_lib.c
